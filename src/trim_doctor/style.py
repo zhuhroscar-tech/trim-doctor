@@ -102,12 +102,13 @@ def print_fields(rows, indent: str = "  ") -> None:
 # fanciness isn't appropriate (same enabled flag as Style, since a
 # non-interactive/piped stream shouldn't get Unicode decoration either).
 _GLYPH_UNICODE = "\u25cf"  # ●
-_GLYPH_ASCII = {"ok": "[OK]", "warn": "[!]", "fail": "[X]"}
+_GLYPH_ASCII = {"ok": "[OK]", "warn": "[!]", "fail": "[X]", "info": "[i]"}
 
 _LEVEL_COLOR = {
     "ok": "bold_green",
     "warn": "bold_yellow",
     "fail": "bold_red",
+    "info": "dim",
 }
 
 
@@ -115,10 +116,11 @@ def status_headline(style: Style, level: str, text: str) -> str:
     """A single-line, color-coded headline: a filled dot + bold text.
 
     `level` is one of "ok" (green -- healthy/passing), "warn" (yellow --
-    a limitation to be aware of but not necessarily fixable/wrong), or
-    "fail" (red -- an actionable problem). Kept to one glyph family
-    (a dot, not a mix of checkmarks/crosses/warning-triangles) so the
-    whole product line reads as one consistent visual system.
+    a limitation to be aware of but not necessarily fixable/wrong),
+    "fail" (red -- an actionable problem), or "info" (dim -- neutral,
+    no action implied). Kept to one glyph family (a dot, not a mix of
+    checkmarks/crosses/warning-triangles) so the whole product line
+    reads as one consistent visual system.
     """
     color_fn = getattr(style, _LEVEL_COLOR[level])
     if style.enabled:

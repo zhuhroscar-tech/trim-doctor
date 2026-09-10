@@ -90,3 +90,10 @@ def test_status_headline_enabled_uses_color_and_dot():
     assert "\u25cf" in result
     assert "Healthy" in result
     assert "\033[1;32m" in result
+
+
+def test_status_headline_supports_info_level():
+    s = Style(False)
+    assert status_headline(s, "info", "Neutral note") == "[i] Neutral note"
+    s2 = Style(True)
+    assert "\033[2m" in status_headline(s2, "info", "Neutral note")
