@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trim-doctor"
+version = "0.1.0"
+description = "Verify the full SSD TRIM/discard passthrough chain on Linux: device support, LUKS, LVM, and mount options."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "zhuhroscar-tech"}]
+keywords = ["linux", "ssd", "trim", "discard", "luks", "lvm", "diagnostics", "cli"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX :: Linux",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Topic :: System :: Filesystems",
+  "Topic :: System :: Systems Administration",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhuhroscar-tech/trim-doctor"
+Issues = "https://github.com/zhuhroscar-tech/trim-doctor/issues"
+
+[project.scripts]
+trim-doctor = "trim_doctor.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
