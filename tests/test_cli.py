@@ -27,8 +27,9 @@ def test_text_output(monkeypatch, capsys):
     monkeypatch.setattr("trim_doctor.cli.diagnose_mountpoint", lambda mountpoint: _fake_report())
     rc = main(["/"])
     out = capsys.readouterr().out
-    assert "luks_blocks_discard" in out
-    assert "allows discards: False" in out
+    assert "example explanation" in out
+    assert "LUKS passthrough" in out
+    assert "no" in out
     assert rc == 2
 
 
@@ -59,3 +60,10 @@ def test_mountpoint_passed_through(monkeypatch):
     monkeypatch.setattr("trim_doctor.cli.diagnose_mountpoint", fake_diagnose)
     main(["/home"])
     assert captured["mountpoint"] == "/home"
+
+
+def test_no_color_flag_disables_ansi(monkeypatch, capsys):
+    monkeypatch.setattr("trim_doctor.cli.diagnose_mountpoint", lambda mountpoint: _fake_report())
+    main(["/", "--no-color"])
+    out = capsys.readouterr().out
+    assert "\033[" not in out

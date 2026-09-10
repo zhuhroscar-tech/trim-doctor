@@ -7,6 +7,9 @@ import sys
 
 from . import __version__
 from .core import diagnose_mountpoint, STATUS_OK
+from .style import bool_badge, print_fields, resolve_style, status_headline
+
+_LEVEL_BY_STATUS = {STATUS_OK: "ok"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,22 +25,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("mountpoint", help="Mount point to check, e.g. / or /home")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p.add_argument("--no-color", action="store_true", help="Disable colored output.")
     return p
 
 
-def _print_text(report) -> None:
-    print(f"Mountpoint: {report.mountpoint}")
-    print(f"Status: {report.status}")
-    print(report.explanation)
+def _print_text(report, style) -> None:
+    level = _LEVEL_BY_STATUS.get(report.status, "fail")
+    print(status_headline(style, level, report.mountpoint))
+    print(style.dim(report.explanation))
+
     if report.device:
-        print(f"\nDevice: {report.device}")
-        print(f"  Device supports discard: {report.device_supports_discard}")
+        rows = [("Device", report.device)]
+        rows.append(("Discard support", bool_badge(style, report.device_supports_discard)))
         if report.is_luks:
-            print(f"  LUKS: yes, allows discards: {report.luks_allows_discards}")
+            rows.append(("LUKS passthrough", bool_badge(style, report.luks_allows_discards)))
         if report.is_lvm:
-            print(f"  LVM: yes, issue_discards enabled: {report.lvm_issue_discards}")
-        print(f"  Mount has 'discard' option: {report.mount_has_discard}")
-        print(f"  fstrim.timer enabled: {report.fstrim_timer_enabled}")
+            rows.append(("LVM passthrough", bool_badge(style, report.lvm_issue_discards)))
+        rows.append(("Mount 'discard' option", bool_badge(style, report.mount_has_discard)))
+        rows.append(("fstrim.timer enabled", bool_badge(style, report.fstrim_timer_enabled)))
+        print()
+        print_fields(rows)
 
 
 def main(argv=None) -> int:
@@ -47,7 +54,8 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
-        _print_text(report)
+        style = resolve_style(no_color_flag=args.no_color)
+        _print_text(report, style)
 
     if report.status == STATUS_OK:
         return 0
