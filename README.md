@@ -101,22 +101,7 @@ found, so it's safe to use in scripts/checks.
 
 Example output:
 
-```
-Mountpoint: /
-Status: luks_blocks_discard
-This mount sits on a LUKS-encrypted volume that does not have discard
-passthrough enabled. By default dm-crypt blocks discards for security
-reasons (they can leak filesystem metadata about used space). Without
-`allow-discards` (LUKS2 persistent flag) or `discard` in /etc/crypttab,
-TRIM requests never reach the underlying device at all, regardless of
-mount options or LVM configuration.
-
-Device: /dev/mapper/root_crypt
-  Device supports discard: True
-  LUKS: yes, allows discards: False
-  Mount has 'discard' option: True
-  fstrim.timer enabled: False
-```
+![trim-doctor example output](docs/images/example-output.png)
 
 Reading `cryptsetup luksDump` on a LUKS volume you don't own the passphrase
 for may prompt for confirmation on some setups; `trim-doctor` never asks
