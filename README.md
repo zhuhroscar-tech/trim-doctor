@@ -1,8 +1,20 @@
 # trim-doctor
 
+[![CI](https://github.com/zhuhroscar-tech/trim-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/zhuhroscar-tech/trim-doctor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/zhuhroscar-tech/trim-doctor?include_prereleases&label=release)](https://github.com/zhuhroscar-tech/trim-doctor/releases)
+![Linux](https://img.shields.io/badge/platform-Linux-111111?logo=linux)
+
 Verify the full SSD **TRIM/discard passthrough chain** on Linux in one
 command, instead of manually re-deriving it every time you set up a new
 LUKS/LVM/SSD combination.
+
+## Simple explanation
+
+Checks whether your SSD's TRIM commands (which keep it fast and long-lived)
+are actually reaching the drive, or being silently swallowed by an
+encryption or storage layer in between. Run one command against a mount
+point and it tells you exactly which layer is blocking TRIM, if any — no
+manual digging through multiple tools required.
 
 ## The problem
 
