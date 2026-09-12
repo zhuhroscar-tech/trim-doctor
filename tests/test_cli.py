@@ -50,6 +50,25 @@ def test_ok_returns_zero(monkeypatch, capsys):
     assert rc == 0
 
 
+def test_text_output_shows_lvm_row_when_is_lvm(monkeypatch, capsys):
+    # Regression: the "LVM passthrough" row is only printed when
+    # report.is_lvm is truthy -- this closes the coverage gap on that
+    # conditional branch (previously only the is_lvm=False path was
+    # exercised by _fake_report()).
+    report = TrimChainReport(
+        mountpoint="/", status=STATUS_LUKS_BLOCKS, explanation="example explanation",
+        device="/dev/mapper/data_lv", device_supports_discard=True,
+        is_luks=False, luks_allows_discards=None,
+        is_lvm=True, lvm_issue_discards=True,
+        mount_has_discard=True, fstrim_timer_enabled=True,
+    )
+    monkeypatch.setattr("trim_doctor.cli.diagnose_mountpoint", lambda mountpoint: report)
+    rc = main(["/"])
+    out = capsys.readouterr().out
+    assert "LVM passthrough" in out
+    assert rc == 2
+
+
 def test_mountpoint_passed_through(monkeypatch):
     captured = {}
 

@@ -6,6 +6,7 @@ from trim_doctor.core import (
     STATUS_LVM_BLOCKS,
     STATUS_NEITHER_DISCARD_NOR_TIMER,
     STATUS_OK,
+    _size_to_bytes,
     device_supports_discard,
     diagnose,
     diagnose_mountpoint,
@@ -16,6 +17,8 @@ from trim_doctor.core import (
     luks_allows_discards,
     lvm_issue_discards_enabled,
     mount_has_discard_option,
+    run,
+    run_capture,
 )
 
 
@@ -430,3 +433,101 @@ def test_diagnose_mountpoint_integration_luks_permission_denied_is_honest():
     )
     assert report.status == STATUS_LUKS_UNDETERMINED
     assert report.is_luks is None
+
+
+def test_run_swallows_missing_binary_oserror():
+    # A nonexistent command raises OSError (FileNotFoundError) inside
+    # subprocess.run; run() must degrade to "" rather than propagate.
+    # This exercises the real subprocess.run() call (not a fake runner),
+    # closing the coverage gap on run()'s try/except body itself.
+    assert run(["/no/such/trim-doctor-binary-xyz"]) == ""
+
+
+def test_run_swallows_timeout(monkeypatch):
+    import subprocess as sp
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        raise sp.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    assert run(["findmnt"], timeout=1) == ""
+
+
+def test_run_returns_real_stdout():
+    # A real, always-present command exercises the success path of run(),
+    # not just the exception branches covered elsewhere.
+    assert run(["echo", "hello"]).strip() == "hello"
+
+
+def test_run_capture_swallows_missing_binary_oserror():
+    out, err, rc = run_capture(["/no/such/trim-doctor-binary-xyz"])
+    assert out == ""
+    assert rc == -1
+    assert err  # the OSError string itself, non-empty
+
+
+def test_run_capture_returns_real_stdout_stderr_rc():
+    out, err, rc = run_capture(["echo", "hello"])
+    assert out.strip() == "hello"
+    assert rc == 0
+
+
+def test_device_supports_discard_skips_non_matching_lines_before_match():
+    # Regression: the loop must `continue` past lines whose NAME doesn't
+    # match rather than stopping at the first non-matching line -- this
+    # exercises the mismatch branch (line_name != name) explicitly with
+    # multiple non-matching entries preceding the real match.
+    sample = "sda 0 0 0\nsdb 0 0 0\nnvme0n1 0 512 2147450880\n"
+
+    def fake_runner(cmd, timeout=15):
+        return sample
+
+    assert device_supports_discard("/dev/nvme0n1", runner=fake_runner) is True
+
+
+def test_device_supports_discard_skips_short_malformed_lines():
+    # Regression: lsblk -r output can include a short/malformed line
+    # (fewer than 4 whitespace-separated fields -- e.g. a truncated or
+    # corrupted row) before the real match. The parser must `continue`
+    # past it rather than crashing on an index error or matching wrong.
+    sample = "weird\nnvme0n1 0 512 2147450880\n"
+
+    def fake_runner(cmd, timeout=15):
+        return sample
+
+    assert device_supports_discard("/dev/nvme0n1", runner=fake_runner) is True
+
+
+def test_size_to_bytes_unparseable_value_returns_none():
+    # lsblk -r can print a non-numeric, non-empty token in edge cases
+    # (locale or version quirks); _size_to_bytes must report "unknown"
+    # (None) rather than raising or silently coercing to zero.
+    assert _size_to_bytes("not-a-number") is None
+
+
+def test_luks_allows_discards_skips_crypttab_comments_and_blank_lines():
+    # Regression: comment and blank lines in /etc/crypttab must be
+    # skipped (the `continue` branch) rather than being mis-split and
+    # potentially matching by accident.
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup":
+            return "Version: 1\n", "", 0
+        if cmd[0] == "cat":
+            return (
+                "# this is a comment\n"
+                "\n"
+                "root_crypt UUID=xyz none luks,discard\n"
+            ), "", 0
+        return "", "", 0
+
+    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_capture_runner) is True
+
+
+def test_lvm_issue_discards_enabled_skips_comment_lines():
+    # Regression: a commented-out issue_discards line (e.g. a disabled
+    # example in the default lvm.conf) must not be matched -- only the
+    # real, uncommented setting further down should count.
+    def fake_runner(cmd, timeout=15):
+        return "devices {\n    # issue_discards = 0\n    issue_discards = 1\n}\n"
+
+    assert lvm_issue_discards_enabled(runner=fake_runner) is True
