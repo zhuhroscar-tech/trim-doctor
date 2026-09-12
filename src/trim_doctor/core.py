@@ -51,6 +51,7 @@ STATUS_LUKS_BLOCKS = "luks_blocks_discard"
 STATUS_LVM_BLOCKS = "lvm_blocks_discard"
 STATUS_NEITHER_DISCARD_NOR_TIMER = "no_discard_mount_option_and_no_fstrim_timer"
 STATUS_LUKS_UNDETERMINED = "luks_status_could_not_be_determined"
+STATUS_DEVICE_UNDETERMINED = "device_discard_support_could_not_be_determined"
 
 STATUS_EXPLANATIONS = {
     STATUS_OK: (
@@ -95,6 +96,15 @@ STATUS_EXPLANATIONS = {
         "requires root/CAP_SYS_ADMIN and this process isn't running as "
         "root. Re-run with sudo to get a real answer instead of an "
         "assumed pass or fail on this critical layer."
+    ),
+    STATUS_DEVICE_UNDETERMINED: (
+        "Whether the underlying block device supports discard could not "
+        "be determined -- the device did not appear by name in `lsblk "
+        "--discard` output (e.g. an unusual mapper name, a device lsblk "
+        "doesn't recognize, or a filesystem not backed by a single named "
+        "block device). This is the most fundamental layer in the TRIM "
+        "chain; without a real answer here the rest of the chain cannot "
+        "be trusted even if it reports healthy."
     ),
 }
 
@@ -286,6 +296,8 @@ def diagnose(
     layer blocking makes everything above it moot."""
     if device_ok is False:
         status = STATUS_DEVICE_UNSUPPORTED
+    elif device_ok is None:
+        status = STATUS_DEVICE_UNDETERMINED
     elif is_luks is None:
         status = STATUS_LUKS_UNDETERMINED
     elif is_luks and luks_ok is False:

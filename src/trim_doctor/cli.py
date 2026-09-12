@@ -6,10 +6,14 @@ import json
 import sys
 
 from . import __version__
-from .core import diagnose_mountpoint, STATUS_OK, STATUS_LUKS_UNDETERMINED
+from .core import diagnose_mountpoint, STATUS_OK, STATUS_LUKS_UNDETERMINED, STATUS_DEVICE_UNDETERMINED
 from .style import bool_badge, print_fields, resolve_style, status_headline
 
-_LEVEL_BY_STATUS = {STATUS_OK: "ok", STATUS_LUKS_UNDETERMINED: "warn"}
+_LEVEL_BY_STATUS = {
+    STATUS_OK: "ok",
+    STATUS_LUKS_UNDETERMINED: "warn",
+    STATUS_DEVICE_UNDETERMINED: "warn",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -1,4 +1,5 @@
 from trim_doctor.core import (
+    STATUS_DEVICE_UNDETERMINED,
     STATUS_DEVICE_UNSUPPORTED,
     STATUS_LUKS_BLOCKS,
     STATUS_LUKS_UNDETERMINED,
@@ -270,6 +271,66 @@ def test_diagnose_ok_via_timer():
         mount_discard=False, timer_enabled=True,
     )
     assert report.status == STATUS_OK
+
+
+def test_diagnose_device_ok_none_is_undetermined_not_ok():
+    """device_supports_discard() returns None when the device couldn't be
+    found by name in `lsblk --discard` output (e.g. an odd mapper name or
+    an lsblk-unrecognized backing device) -- that must not silently fall
+    through to STATUS_OK. Before this fix, diagnose() had no branch for
+    device_ok is None, so it fell all the way to the STATUS_OK else-branch
+    whenever mount_discard or timer_enabled was true, incorrectly reporting
+    the TRIM chain healthy despite never actually confirming the most
+    fundamental layer (device-level discard support)."""
+    report = diagnose(
+        mountpoint="/mnt/data", device="/dev/mapper/oddname", device_ok=None,
+        is_luks=False, luks_ok=None, is_lvm=False, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_DEVICE_UNDETERMINED
+    assert report.status != STATUS_OK
+
+
+def test_diagnose_device_ok_none_takes_priority_over_luks_undetermined():
+    """Device layer is checked first physically -- if device support is
+    unknown, that should be reported even if a later layer is also
+    undetermined, since the device is the most fundamental blocker."""
+    report = diagnose(
+        mountpoint="/mnt/data", device="/dev/mapper/oddname", device_ok=None,
+        is_luks=None, luks_ok=None, is_lvm=False, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_DEVICE_UNDETERMINED
+
+
+def test_diagnose_mountpoint_device_not_found_in_lsblk_is_undetermined():
+    """Integration-level regression: when lsblk's output never mentions the
+    resolved device name at all (e.g. it uses a different display name than
+    the crypttab/mapper name findmnt reports), device_supports_discard()
+    returns None and diagnose_mountpoint() must surface that as genuinely
+    undetermined rather than reporting a false-positive healthy chain."""
+    def fake_runner(cmd, timeout=15):
+        if cmd[0] == "findmnt" and "SOURCE" in cmd:
+            return "/dev/mapper/data_crypt\n"
+        if cmd[0] == "findmnt" and "OPTIONS" in cmd:
+            return "rw,relatime,discard\n"
+        if cmd[0] == "lsblk":
+            # Note: no line matches "data_crypt" at all.
+            return "sda1 0 512 2147450880\n"
+        if cmd[0] == "lvs":
+            return ""
+        if cmd[0] == "systemctl":
+            return "disabled\n"
+        return ""
+
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup":
+            return "", "Device data_crypt is not active.\n", 4
+        return "", "", 0
+
+    report = diagnose_mountpoint("/mnt/data", runner=fake_runner, capture_runner=fake_capture_runner)
+    assert report.status == STATUS_DEVICE_UNDETERMINED
+    assert report.status != STATUS_OK
 
 
 def test_report_to_dict_roundtrip():
