@@ -193,7 +193,14 @@ def is_luks_device(device: str, runner=run_capture) -> Optional[bool]:
     out, err, rc = runner(["cryptsetup", "status", device.split("/")[-1]])
     if _is_permission_denied(err, rc):
         return None
-    return "type:    LUKS" in out or "type: LUKS" in out.replace("  ", " ")
+    # cryptsetup pads the "type:" field to align with longer labels like
+    # "cipher:"/"keysize:" below it; the padding width varies by version,
+    # locale, and terminal width (1, 2, 3, 4+ spaces have all been observed
+    # in the wild). A fixed-width substring check or a single left-to-right
+    # "  " -> " " collapse (which does not fully normalize odd counts, e.g.
+    # 3 spaces collapses to 2, not 1) can silently miss a real LUKS device
+    # and report it as non-LUKS, skipping the LUKS passthrough check below.
+    return bool(re.search(r"^\s*type:\s*LUKS", out, re.MULTILINE | re.IGNORECASE))
 
 
 def luks_allows_discards(device: str, runner=run_capture) -> Optional[bool]:

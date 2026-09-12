@@ -76,6 +76,33 @@ def test_is_luks_device_false():
     assert is_luks_device("/dev/sda1", runner=fake_capture_runner) is False
 
 
+def test_is_luks_device_true_with_odd_padding_widths():
+    """Regression: real `cryptsetup status` output pads the 'type:' field to
+    align with longer labels like 'cipher:'/'keysize:' below it, and the
+    padding width varies (1, 2, 3, 4+ spaces observed across cryptsetup
+    versions/locales). The old check (`"type:    LUKS" in out` or a single
+    "  " -> " " collapse) missed 3-space and 5-space padding, silently
+    misreporting a real LUKS device as non-LUKS and skipping the LUKS
+    passthrough discard check entirely -- a correctness bug on a
+    security-relevant code path."""
+    for padding in (1, 2, 3, 4, 5):
+        out = f"/dev/mapper/root_crypt is active.\n  type:{' ' * padding}LUKS1\n  cipher:  aes-xts-plain64\n"
+
+        def fake_capture_runner(cmd, timeout=15, _out=out):
+            return _out, "", 0
+
+        assert is_luks_device("/dev/mapper/root_crypt", runner=fake_capture_runner) is True, (
+            f"failed to detect LUKS with {padding}-space padding"
+        )
+
+
+def test_is_luks_device_false_when_type_is_not_luks():
+    def fake_capture_runner(cmd, timeout=15):
+        return "/dev/mapper/plain_crypt is active.\n  type:    PLAIN\n", "", 0
+
+    assert is_luks_device("/dev/mapper/plain_crypt", runner=fake_capture_runner) is False
+
+
 def test_is_luks_device_none_when_permission_denied():
     """Regression: `cryptsetup status` requires root. Running trim-doctor as
     a non-root user must surface an honest 'unknown' instead of silently
