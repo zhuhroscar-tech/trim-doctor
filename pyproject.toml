@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trim-doctor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Verify the full SSD TRIM/discard passthrough chain on Linux: device support, LUKS, LVM, and mount options."
 readme = "README.md"
 license = {text = "MIT"}

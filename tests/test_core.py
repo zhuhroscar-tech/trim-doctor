@@ -1,6 +1,7 @@
 from trim_doctor.core import (
     STATUS_DEVICE_UNSUPPORTED,
     STATUS_LUKS_BLOCKS,
+    STATUS_LUKS_UNDETERMINED,
     STATUS_LVM_BLOCKS,
     STATUS_NEITHER_DISCARD_NOR_TIMER,
     STATUS_OK,
@@ -61,48 +62,73 @@ def test_device_supports_discard_none_when_not_found():
 
 
 def test_is_luks_device_true():
-    def fake_runner(cmd, timeout=15):
-        return "/dev/mapper/root_crypt is active.\n  type:    LUKS2\n  cipher:  aes-xts-plain64\n"
+    def fake_capture_runner(cmd, timeout=15):
+        return "/dev/mapper/root_crypt is active.\n  type:    LUKS2\n  cipher:  aes-xts-plain64\n", "", 0
 
-    assert is_luks_device("/dev/mapper/root_crypt", runner=fake_runner) is True
+    assert is_luks_device("/dev/mapper/root_crypt", runner=fake_capture_runner) is True
 
 
 def test_is_luks_device_false():
-    def fake_runner(cmd, timeout=15):
-        return "Command failed"
+    def fake_capture_runner(cmd, timeout=15):
+        return "", "Device /dev/sda1 is not active.\n", 4
 
-    assert is_luks_device("/dev/sda1", runner=fake_runner) is False
+    assert is_luks_device("/dev/sda1", runner=fake_capture_runner) is False
+
+
+def test_is_luks_device_none_when_permission_denied():
+    """Regression: `cryptsetup status` requires root. Running trim-doctor as
+    a non-root user must surface an honest 'unknown' instead of silently
+    treating a permission error identically to 'definitely not LUKS', which
+    would skip the LUKS-blocks-discard check entirely on encrypted disks."""
+    def fake_capture_runner(cmd, timeout=15):
+        return "", "cryptsetup: Permission denied.\n", 1
+
+    assert is_luks_device("/dev/mapper/root_crypt", runner=fake_capture_runner) is None
 
 
 def test_luks_allows_discards_via_dump_flag():
-    def fake_runner(cmd, timeout=15):
+    def fake_capture_runner(cmd, timeout=15):
         if cmd[0] == "cryptsetup" and cmd[1] == "luksDump":
-            return "Version:        2\nFlags:           allow-discards\n"
-        return ""
+            return "Version:        2\nFlags:           allow-discards\n", "", 0
+        return "", "", 0
 
-    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_runner) is True
+    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_capture_runner) is True
 
 
 def test_luks_allows_discards_via_crypttab():
-    def fake_runner(cmd, timeout=15):
+    def fake_capture_runner(cmd, timeout=15):
         if cmd[0] == "cryptsetup":
-            return "Version: 1\n"
+            return "Version: 1\n", "", 0
         if cmd[0] == "cat":
-            return "root_crypt UUID=xyz none luks,discard\n"
-        return ""
+            return "root_crypt UUID=xyz none luks,discard\n", "", 0
+        return "", "", 0
 
-    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_runner) is True
+    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_capture_runner) is True
 
 
 def test_luks_allows_discards_false_when_neither():
-    def fake_runner(cmd, timeout=15):
+    def fake_capture_runner(cmd, timeout=15):
         if cmd[0] == "cryptsetup":
-            return "Version: 2\nFlags:\n"
+            return "Version: 2\nFlags:\n", "", 0
         if cmd[0] == "cat":
-            return "root_crypt UUID=xyz none luks\n"
-        return ""
+            return "root_crypt UUID=xyz none luks\n", "", 0
+        return "", "", 0
 
-    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_runner) is False
+    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_capture_runner) is False
+
+
+def test_luks_allows_discards_none_when_permission_denied_and_no_crypttab_entry():
+    """Same permission-denied class as is_luks_device: luksDump also
+    requires root. If it fails on permission and crypttab has no explicit
+    entry either, the honest answer is 'unknown', not 'False'."""
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup":
+            return "", "Cannot access keyslot area of device: Permission denied\n", 1
+        if cmd[0] == "cat":
+            return "", "", 0
+        return "", "", 0
+
+    assert luks_allows_discards("/dev/mapper/root_crypt", runner=fake_capture_runner) is None
 
 
 def test_is_lvm_device_true():
@@ -186,6 +212,30 @@ def test_diagnose_luks_blocks():
     assert report.status == STATUS_LUKS_BLOCKS
 
 
+def test_diagnose_luks_undetermined_when_is_luks_none():
+    """Regression: previously is_luks was a plain bool, so a permission
+    failure on `cryptsetup status` collapsed to False and the whole LUKS
+    layer was skipped -- diagnose() would report the mount OK/healthy even
+    though nobody actually checked LUKS discard passthrough."""
+    report = diagnose(
+        mountpoint="/", device="/dev/mapper/root_crypt", device_ok=True,
+        is_luks=None, luks_ok=None, is_lvm=False, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_LUKS_UNDETERMINED
+
+
+def test_diagnose_luks_undetermined_when_luks_ok_none_but_is_luks_true():
+    """Same bug class, one layer down: is_luks confirmed True (device really
+    is LUKS) but luksDump/crypttab could not determine the discard flag."""
+    report = diagnose(
+        mountpoint="/", device="/dev/mapper/root_crypt", device_ok=True,
+        is_luks=True, luks_ok=None, is_lvm=False, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_LUKS_UNDETERMINED
+
+
 def test_diagnose_lvm_blocks():
     report = diagnose(
         mountpoint="/", device="/dev/vg0/root", device_ok=True,
@@ -241,15 +291,54 @@ def test_diagnose_mountpoint_integration():
             return "rw,relatime,discard\n"
         if cmd[0] == "lsblk":
             return "sda1 0 512 2147450880\n"
-        if cmd[0] == "cryptsetup":
-            return ""
         if cmd[0] == "lvs":
             return ""
         if cmd[0] == "systemctl":
             return "disabled\n"
         return ""
 
-    report = diagnose_mountpoint("/", runner=fake_runner)
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup":
+            return "", "Device /dev/sda1 is not active.\n", 4
+        return "", "", 0
+
+    report = diagnose_mountpoint("/", runner=fake_runner, capture_runner=fake_capture_runner)
     assert report.status == STATUS_OK
     assert report.is_luks is False
     assert report.is_lvm is False
+
+
+def test_diagnose_mountpoint_integration_luks_permission_denied_is_honest():
+    """End-to-end regression for the original bug: a LUKS-encrypted mount
+    checked as a non-root user must report STATUS_LUKS_UNDETERMINED, not a
+    false STATUS_OK. Before the fix, is_luks_device()/luks_allows_discards()
+    swallowed the permission-denied cryptsetup failure into a plain False,
+    so this exact scenario (mount option is fine, but LUKS discard
+    passthrough was never actually checked) silently reported healthy."""
+    def fake_runner(cmd, timeout=15):
+        if cmd[0] == "findmnt" and "SOURCE" in cmd:
+            return "/dev/mapper/root_crypt\n"
+        if cmd[0] == "findmnt" and "OPTIONS" in cmd:
+            return "rw,relatime,discard\n"
+        if cmd[0] == "lsblk":
+            return "root_crypt 0 512 2147450880\n"
+        if cmd[0] == "lvs":
+            return ""
+        if cmd[0] == "systemctl":
+            return "disabled\n"
+        return ""
+
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup" and cmd[1] == "status":
+            return "", "cryptsetup: Permission denied.\n", 1
+        if cmd[0] == "cryptsetup" and cmd[1] == "luksDump":
+            return "", "Cannot access keyslot area of device: Permission denied\n", 1
+        if cmd[0] == "cat":
+            return "", "", 0
+        return "", "", 0
+
+    report = diagnose_mountpoint(
+        "/home", runner=fake_runner, capture_runner=fake_capture_runner
+    )
+    assert report.status == STATUS_LUKS_UNDETERMINED
+    assert report.is_luks is None

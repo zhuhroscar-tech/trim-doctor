@@ -50,6 +50,7 @@ STATUS_DEVICE_UNSUPPORTED = "device_does_not_support_discard"
 STATUS_LUKS_BLOCKS = "luks_blocks_discard"
 STATUS_LVM_BLOCKS = "lvm_blocks_discard"
 STATUS_NEITHER_DISCARD_NOR_TIMER = "no_discard_mount_option_and_no_fstrim_timer"
+STATUS_LUKS_UNDETERMINED = "luks_status_could_not_be_determined"
 
 STATUS_EXPLANATIONS = {
     STATUS_OK: (
@@ -87,8 +88,15 @@ STATUS_EXPLANATIONS = {
         "mount -- data is never actively discarded, even though every "
         "layer below (device/LUKS/LVM) may support it fine."
     ),
+    STATUS_LUKS_UNDETERMINED: (
+        "This mount sits on a LUKS-encrypted volume, but whether discard "
+        "passthrough is enabled could not be determined -- `cryptsetup "
+        "luksDump` or `status` failed, most likely because this check "
+        "requires root/CAP_SYS_ADMIN and this process isn't running as "
+        "root. Re-run with sudo to get a real answer instead of an "
+        "assumed pass or fail on this critical layer."
+    ),
 }
-
 
 def run(cmd: list, timeout: int = 15) -> str:
     """Run a read-only subprocess command, returning stdout (empty on error)."""
@@ -97,6 +105,33 @@ def run(cmd: list, timeout: int = 15) -> str:
         return result.stdout or ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+_PERMISSION_DENIED_RE = re.compile(
+    r"permission denied|must be superuser|must be root|requires? (?:root|superuser)|not permitted",
+    re.IGNORECASE,
+)
+
+
+def run_capture(cmd: list, timeout: int = 15):
+    """Run a read-only subprocess command, returning (stdout, stderr, returncode).
+
+    Unlike run(), this preserves stderr/exit status so callers can tell a
+    genuinely empty/negative result apart from a command that failed because
+    it needs elevated privileges (e.g. `cryptsetup status` as non-root)."""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        return result.stdout or "", result.stderr or "", result.returncode
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", str(exc), -1
+
+
+def _is_permission_denied(stderr: str, returncode: int) -> bool:
+    """True if a command's failure looks like a privilege/permission problem
+    rather than a genuine 'no such thing exists' answer."""
+    if returncode == 0:
+        return False
+    return bool(_PERMISSION_DENIED_RE.search(stderr))
 
 
 def get_source_device(mountpoint: str, runner=run) -> Optional[str]:
@@ -139,20 +174,31 @@ def _size_to_bytes(value: str) -> Optional[int]:
         return None  # lsblk -r sometimes prints raw bytes; unparseable = unknown
 
 
-def is_luks_device(device: str, runner=run) -> bool:
-    out = runner(["cryptsetup", "status", device.split("/")[-1]])
+def is_luks_device(device: str, runner=run_capture) -> Optional[bool]:
+    """Return True if `cryptsetup status` reports this device as LUKS,
+    False if it clearly is not, or None if the check itself could not be
+    performed (e.g. `cryptsetup status` requires root and this process
+    isn't -- it exits non-zero with a permission-denied message on stderr
+    rather than printing a real answer)."""
+    out, err, rc = runner(["cryptsetup", "status", device.split("/")[-1]])
+    if _is_permission_denied(err, rc):
+        return None
     return "type:    LUKS" in out or "type: LUKS" in out.replace("  ", " ")
 
 
-def luks_allows_discards(device: str, runner=run) -> bool:
+def luks_allows_discards(device: str, runner=run_capture) -> Optional[bool]:
     """Check for the LUKS2 persistent 'allow-discards' flag via luksDump,
-    or a 'discard' option for this mapping in /etc/crypttab."""
-    dump = runner(["cryptsetup", "luksDump", device])
-    if re.search(r"^\s*Flags:\s*.*allow-discards", dump, re.MULTILINE):
+    or a 'discard' option for this mapping in /etc/crypttab. Returns None
+    if luksDump itself could not be run (typically a permission problem --
+    luksDump requires root) and crypttab has no matching, explicit entry
+    either, since in that case we genuinely don't know the answer."""
+    dump_out, dump_err, dump_rc = runner(["cryptsetup", "luksDump", device])
+    dump_failed_permission = _is_permission_denied(dump_err, dump_rc)
+    if not dump_failed_permission and re.search(r"^\s*Flags:\s*.*allow-discards", dump_out, re.MULTILINE):
         return True
-    crypttab = runner(["cat", "/etc/crypttab"])
+    crypttab_out, _, _ = runner(["cat", "/etc/crypttab"])
     mapper_name = device.split("/")[-1]
-    for line in crypttab.splitlines():
+    for line in crypttab_out.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -161,6 +207,8 @@ def luks_allows_discards(device: str, runner=run) -> bool:
             options = fields[3] if len(fields) > 3 else ""
             if "discard" in options.split(","):
                 return True
+    if dump_failed_permission:
+        return None
     return False
 
 
@@ -199,7 +247,7 @@ class TrimChainReport:
     explanation: str
     device: Optional[str] = None
     device_supports_discard: Optional[bool] = None
-    is_luks: bool = False
+    is_luks: Optional[bool] = False
     luks_allows_discards: Optional[bool] = None
     is_lvm: bool = False
     lvm_issue_discards: Optional[bool] = None
@@ -226,7 +274,7 @@ def diagnose(
     mountpoint: str,
     device: Optional[str],
     device_ok: Optional[bool],
-    is_luks: bool,
+    is_luks: Optional[bool],
     luks_ok: Optional[bool],
     is_lvm: bool,
     lvm_ok: Optional[bool],
@@ -238,8 +286,12 @@ def diagnose(
     layer blocking makes everything above it moot."""
     if device_ok is False:
         status = STATUS_DEVICE_UNSUPPORTED
+    elif is_luks is None:
+        status = STATUS_LUKS_UNDETERMINED
     elif is_luks and luks_ok is False:
         status = STATUS_LUKS_BLOCKS
+    elif is_luks and luks_ok is None:
+        status = STATUS_LUKS_UNDETERMINED
     elif is_lvm and lvm_ok is False:
         status = STATUS_LVM_BLOCKS
     elif not mount_discard and not timer_enabled:
@@ -262,11 +314,11 @@ def diagnose(
     )
 
 
-def diagnose_mountpoint(mountpoint: str, runner=run) -> TrimChainReport:
+def diagnose_mountpoint(mountpoint: str, runner=run, capture_runner=run_capture) -> TrimChainReport:
     device = get_source_device(mountpoint, runner=runner)
 
-    is_luks = bool(device) and is_luks_device(device, runner=runner) if device else False
-    luks_ok = luks_allows_discards(device, runner=runner) if (is_luks and device) else None
+    is_luks = is_luks_device(device, runner=capture_runner) if device else False
+    luks_ok = luks_allows_discards(device, runner=capture_runner) if (is_luks and device) else None
 
     is_lvm = bool(device) and is_lvm_device(device, runner=runner) if device else False
     lvm_ok = lvm_issue_discards_enabled(runner=runner) if is_lvm else None

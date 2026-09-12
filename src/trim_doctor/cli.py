@@ -6,10 +6,10 @@ import json
 import sys
 
 from . import __version__
-from .core import diagnose_mountpoint, STATUS_OK
+from .core import diagnose_mountpoint, STATUS_OK, STATUS_LUKS_UNDETERMINED
 from .style import bool_badge, print_fields, resolve_style, status_headline
 
-_LEVEL_BY_STATUS = {STATUS_OK: "ok"}
+_LEVEL_BY_STATUS = {STATUS_OK: "ok", STATUS_LUKS_UNDETERMINED: "warn"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,7 +37,7 @@ def _print_text(report, style) -> None:
     if report.device:
         rows = [("Device", report.device)]
         rows.append(("Discard support", bool_badge(style, report.device_supports_discard)))
-        if report.is_luks:
+        if report.is_luks or report.is_luks is None:
             rows.append(("LUKS passthrough", bool_badge(style, report.luks_allows_discards)))
         if report.is_lvm:
             rows.append(("LVM passthrough", bool_badge(style, report.lvm_issue_discards)))
