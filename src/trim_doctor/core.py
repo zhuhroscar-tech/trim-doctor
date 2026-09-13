@@ -52,6 +52,7 @@ STATUS_LVM_BLOCKS = "lvm_blocks_discard"
 STATUS_NEITHER_DISCARD_NOR_TIMER = "no_discard_mount_option_and_no_fstrim_timer"
 STATUS_LUKS_UNDETERMINED = "luks_status_could_not_be_determined"
 STATUS_DEVICE_UNDETERMINED = "device_discard_support_could_not_be_determined"
+STATUS_LVM_UNDETERMINED = "lvm_status_could_not_be_determined"
 
 STATUS_EXPLANATIONS = {
     STATUS_OK: (
@@ -105,6 +106,15 @@ STATUS_EXPLANATIONS = {
         "block device). This is the most fundamental layer in the TRIM "
         "chain; without a real answer here the rest of the chain cannot "
         "be trusted even if it reports healthy."
+    ),
+    STATUS_LVM_UNDETERMINED: (
+        "This mount may sit on an LVM logical volume, but whether it does "
+        "(`lvs`) or whether LVM passes discards through "
+        "(`/etc/lvm/lvm.conf`'s `issue_discards`) could not be determined "
+        "-- the underlying command failed, most likely because it requires "
+        "root/elevated privileges and this process isn't running as root. "
+        "Re-run with sudo to get a real answer instead of an assumed "
+        "not-LVM or pass on this layer."
     ),
 }
 
@@ -229,14 +239,30 @@ def luks_allows_discards(device: str, runner=run_capture) -> Optional[bool]:
     return False
 
 
-def is_lvm_device(device: str, runner=run) -> bool:
-    out = runner(["lvs", "--noheadings", "-o", "lv_path"])
+def is_lvm_device(device: str, runner=run_capture) -> Optional[bool]:
+    """Return True if `lvs` lists this device as an LVM logical volume,
+    False if it clearly does not, or None if the check itself could not
+    be performed (e.g. `lvs` requires elevated privileges to read device-
+    mapper/PV metadata in some locked-down environments and fails with a
+    permission error rather than a real answer). Collapsing that failure
+    into False would silently skip the LVM discard-passthrough check
+    below and let the mount be reported healthy without ever having
+    verified it -- the same false-negative bug class already fixed for
+    LUKS detection above."""
+    out, err, rc = runner(["lvs", "--noheadings", "-o", "lv_path"])
+    if _is_permission_denied(err, rc):
+        return None
     return device.strip() in out
 
 
-def lvm_issue_discards_enabled(runner=run) -> bool:
-    conf = runner(["cat", "/etc/lvm/lvm.conf"])
-    for line in conf.splitlines():
+def lvm_issue_discards_enabled(runner=run_capture) -> Optional[bool]:
+    """Return whether /etc/lvm/lvm.conf enables issue_discards, or None
+    if the file could not be read (e.g. permission denied) -- distinct
+    from a genuine absent-setting default of False."""
+    out, err, rc = runner(["cat", "/etc/lvm/lvm.conf"])
+    if _is_permission_denied(err, rc):
+        return None
+    for line in out.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
@@ -266,7 +292,7 @@ class TrimChainReport:
     device_supports_discard: Optional[bool] = None
     is_luks: Optional[bool] = False
     luks_allows_discards: Optional[bool] = None
-    is_lvm: bool = False
+    is_lvm: Optional[bool] = False
     lvm_issue_discards: Optional[bool] = None
     mount_has_discard: Optional[bool] = None
     fstrim_timer_enabled: Optional[bool] = None
@@ -293,7 +319,7 @@ def diagnose(
     device_ok: Optional[bool],
     is_luks: Optional[bool],
     luks_ok: Optional[bool],
-    is_lvm: bool,
+    is_lvm: Optional[bool],
     lvm_ok: Optional[bool],
     mount_discard: Optional[bool],
     timer_enabled: Optional[bool],
@@ -311,8 +337,12 @@ def diagnose(
         status = STATUS_LUKS_BLOCKS
     elif is_luks and luks_ok is None:
         status = STATUS_LUKS_UNDETERMINED
+    elif is_lvm is None:
+        status = STATUS_LVM_UNDETERMINED
     elif is_lvm and lvm_ok is False:
         status = STATUS_LVM_BLOCKS
+    elif is_lvm and lvm_ok is None:
+        status = STATUS_LVM_UNDETERMINED
     elif not mount_discard and not timer_enabled:
         status = STATUS_NEITHER_DISCARD_NOR_TIMER
     else:
@@ -339,8 +369,8 @@ def diagnose_mountpoint(mountpoint: str, runner=run, capture_runner=run_capture)
     is_luks = is_luks_device(device, runner=capture_runner) if device else False
     luks_ok = luks_allows_discards(device, runner=capture_runner) if (is_luks and device) else None
 
-    is_lvm = bool(device) and is_lvm_device(device, runner=runner) if device else False
-    lvm_ok = lvm_issue_discards_enabled(runner=runner) if is_lvm else None
+    is_lvm = is_lvm_device(device, runner=capture_runner) if device else False
+    lvm_ok = lvm_issue_discards_enabled(runner=capture_runner) if is_lvm else None
 
     device_ok = device_supports_discard(device, runner=runner) if device else None
     mount_discard = mount_has_discard_option(mountpoint, runner=runner)
