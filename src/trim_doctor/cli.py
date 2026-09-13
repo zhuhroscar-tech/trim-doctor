@@ -43,7 +43,7 @@ def _print_text(report, style) -> None:
         rows.append(("Discard support", bool_badge(style, report.device_supports_discard)))
         if report.is_luks or report.is_luks is None:
             rows.append(("LUKS passthrough", bool_badge(style, report.luks_allows_discards)))
-        if report.is_lvm:
+        if report.is_lvm or report.is_lvm is None:
             rows.append(("LVM passthrough", bool_badge(style, report.lvm_issue_discards)))
         rows.append(("Mount 'discard' option", bool_badge(style, report.mount_has_discard)))
         rows.append(("fstrim.timer enabled", bool_badge(style, report.fstrim_timer_enabled)))

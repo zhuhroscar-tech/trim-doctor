@@ -4,6 +4,7 @@ from trim_doctor.core import (
     STATUS_LUKS_BLOCKS,
     STATUS_LUKS_UNDETERMINED,
     STATUS_LVM_BLOCKS,
+    STATUS_LVM_UNDETERMINED,
     STATUS_NEITHER_DISCARD_NOR_TIMER,
     STATUS_OK,
     _size_to_bytes,
@@ -164,37 +165,64 @@ def test_luks_allows_discards_none_when_permission_denied_and_no_crypttab_entry(
 
 def test_is_lvm_device_true():
     def fake_runner(cmd, timeout=15):
-        return "  /dev/vg0/root\n  /dev/vg0/home\n"
+        return "  /dev/vg0/root\n  /dev/vg0/home\n", "", 0
 
     assert is_lvm_device("/dev/vg0/root", runner=fake_runner) is True
 
 
 def test_is_lvm_device_false():
     def fake_runner(cmd, timeout=15):
-        return "  /dev/vg0/root\n"
+        return "  /dev/vg0/root\n", "", 0
 
     assert is_lvm_device("/dev/mapper/root_crypt", runner=fake_runner) is False
 
 
+def test_is_lvm_device_none_when_permission_denied():
+    """Regression: a permission-denied `lvs` failure previously collapsed
+    to an empty string (since is_lvm_device used the stdout-only `run`),
+    which made `device.strip() in out` evaluate to False -- silently
+    reporting 'this is not LVM' and skipping the LVM discard-passthrough
+    check entirely, even though whether LVM is involved was never
+    actually determined. Same false-negative bug class as the LUKS
+    permission-denied fix above."""
+    def fake_runner(cmd, timeout=15):
+        return "", "  /dev/vg0/root: Permission denied\n", 5
+
+    assert is_lvm_device("/dev/vg0/root", runner=fake_runner) is None
+
+
 def test_lvm_issue_discards_enabled_true():
     def fake_runner(cmd, timeout=15):
-        return "devices {\n    issue_discards = 1\n}\n"
+        return "devices {\n    issue_discards = 1\n}\n", "", 0
 
     assert lvm_issue_discards_enabled(runner=fake_runner) is True
 
 
 def test_lvm_issue_discards_enabled_false():
     def fake_runner(cmd, timeout=15):
-        return "devices {\n    issue_discards = 0\n}\n"
+        return "devices {\n    issue_discards = 0\n}\n", "", 0
 
     assert lvm_issue_discards_enabled(runner=fake_runner) is False
 
 
 def test_lvm_issue_discards_default_false_when_absent():
     def fake_runner(cmd, timeout=15):
-        return "devices {\n}\n"
+        return "devices {\n}\n", "", 0
 
     assert lvm_issue_discards_enabled(runner=fake_runner) is False
+
+
+def test_lvm_issue_discards_none_when_permission_denied():
+    """Regression: reading /etc/lvm/lvm.conf can fail with permission
+    denied (e.g. mode 0600 root-only on some distros); the prior
+    implementation used the stdout-only `run` helper, which silently
+    returned "" for that case, identical to a genuinely absent setting --
+    reporting a confirmed 'issue_discards disabled, LVM blocks discard'
+    verdict when the truth is 'we could not check'."""
+    def fake_runner(cmd, timeout=15):
+        return "", "cat: /etc/lvm/lvm.conf: Permission denied\n", 1
+
+    assert lvm_issue_discards_enabled(runner=fake_runner) is None
 
 
 def test_mount_has_discard_option_true():
@@ -274,6 +302,31 @@ def test_diagnose_lvm_blocks():
         mount_discard=True, timer_enabled=False,
     )
     assert report.status == STATUS_LVM_BLOCKS
+
+
+def test_diagnose_lvm_undetermined_when_is_lvm_none():
+    """Regression: previously is_lvm_device/lvm_issue_discards_enabled used
+    the stdout-only `run` helper, so a permission-denied `lvs`/lvm.conf
+    read collapsed to False -- diagnose() would report the mount OK even
+    though whether LVM is even involved, let alone whether it passes
+    discards through, was never actually verified."""
+    report = diagnose(
+        mountpoint="/", device="/dev/vg0/root", device_ok=True,
+        is_luks=False, luks_ok=None, is_lvm=None, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_LVM_UNDETERMINED
+
+
+def test_diagnose_lvm_undetermined_when_lvm_ok_none_but_is_lvm_true():
+    """Same bug class, one layer down: is_lvm confirmed True (device really
+    is LVM) but lvm.conf could not be read to determine issue_discards."""
+    report = diagnose(
+        mountpoint="/", device="/dev/vg0/root", device_ok=True,
+        is_luks=False, luks_ok=None, is_lvm=True, lvm_ok=None,
+        mount_discard=True, timer_enabled=False,
+    )
+    assert report.status == STATUS_LVM_UNDETERMINED
 
 
 def test_diagnose_neither_discard_nor_timer():
@@ -435,6 +488,40 @@ def test_diagnose_mountpoint_integration_luks_permission_denied_is_honest():
     assert report.is_luks is None
 
 
+def test_diagnose_mountpoint_integration_lvm_permission_denied_is_honest():
+    """End-to-end regression, LVM layer: a mount on an LVM logical volume
+    checked as a non-root user (or under a locked-down device-mapper
+    policy) must report STATUS_LVM_UNDETERMINED, not a false STATUS_OK.
+    Before the fix, is_lvm_device()/lvm_issue_discards_enabled() used the
+    stdout-only `run` helper, so a permission-denied `lvs` failure
+    silently collapsed to is_lvm=False and the whole LVM discard-
+    passthrough check was skipped, reporting healthy without ever having
+    checked it."""
+    def fake_runner(cmd, timeout=15):
+        if cmd[0] == "findmnt" and "SOURCE" in cmd:
+            return "/dev/vg0/root\n"
+        if cmd[0] == "findmnt" and "OPTIONS" in cmd:
+            return "rw,relatime,discard\n"
+        if cmd[0] == "lsblk":
+            return "root 0 512 2147450880\n"
+        if cmd[0] == "systemctl":
+            return "disabled\n"
+        return ""
+
+    def fake_capture_runner(cmd, timeout=15):
+        if cmd[0] == "cryptsetup":
+            return "", "Device root is not active.\n", 4
+        if cmd[0] == "lvs":
+            return "", "  /dev/vg0/root: Permission denied\n", 5
+        return "", "", 0
+
+    report = diagnose_mountpoint(
+        "/mnt/data", runner=fake_runner, capture_runner=fake_capture_runner
+    )
+    assert report.status == STATUS_LVM_UNDETERMINED
+    assert report.is_lvm is None
+
+
 def test_run_swallows_missing_binary_oserror():
     # A nonexistent command raises OSError (FileNotFoundError) inside
     # subprocess.run; run() must degrade to "" rather than propagate.
@@ -528,6 +615,6 @@ def test_lvm_issue_discards_enabled_skips_comment_lines():
     # example in the default lvm.conf) must not be matched -- only the
     # real, uncommented setting further down should count.
     def fake_runner(cmd, timeout=15):
-        return "devices {\n    # issue_discards = 0\n    issue_discards = 1\n}\n"
+        return "devices {\n    # issue_discards = 0\n    issue_discards = 1\n}\n", "", 0
 
     assert lvm_issue_discards_enabled(runner=fake_runner) is True
