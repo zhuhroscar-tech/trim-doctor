@@ -2,4 +2,4 @@
 (device support -> LVM -> LUKS -> mount options), instead of manually
 checking each layer."""
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
