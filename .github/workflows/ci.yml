@@ -46,8 +46,8 @@ jobs:
       - name: Build a standalone .pyz (zipapp)
         run: |
           python -m pip install . --target build/pyz_root
+          printf 'from trim_doctor.cli import main\nif __name__ == "__main__":\n    raise SystemExit(main())\n' > build/pyz_root/__main__.py
           python -m zipapp build/pyz_root \
-            --main "trim_doctor.cli:main" \
             --output dist/trim-doctor.pyz \
             --python "/usr/bin/env python3"
       - name: Smoke-test the .pyz on this Linux runner
@@ -55,6 +55,16 @@ jobs:
           python3 dist/trim-doctor.pyz --version
           sudo python3 dist/trim-doctor.pyz / --json > /tmp/td.json || true
           python3 -m json.tool < /tmp/td.json > /dev/null
+          # Regression check: the .pyz's exit code must reflect the real
+          # command result, not always be 0 (zipapp's --main template
+          # omits sys.exit(), which previously made every .pyz invocation
+          # report success regardless of actual findings/errors). An
+          # unresolvable mountpoint is a deterministic non-OK case.
+          set +e
+          python3 dist/trim-doctor.pyz /this/path/does/not/exist > /dev/null 2>&1
+          bogus_code=$?
+          set -e
+          test "$bogus_code" -eq 2
       - name: Generate checksums
         run: |
           cd dist
