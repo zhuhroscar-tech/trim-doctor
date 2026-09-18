@@ -6,13 +6,22 @@ import json
 import sys
 
 from . import __version__
-from .core import diagnose_mountpoint, STATUS_OK, STATUS_LUKS_UNDETERMINED, STATUS_DEVICE_UNDETERMINED
+from .core import (
+    diagnose_mountpoint,
+    STATUS_OK,
+    STATUS_LUKS_UNDETERMINED,
+    STATUS_DEVICE_UNDETERMINED,
+    STATUS_LVM_UNDETERMINED,
+    STATUS_LVM_PV_LUKS_UNDETERMINED,
+)
 from .style import bool_badge, print_fields, resolve_style, status_headline
 
 _LEVEL_BY_STATUS = {
     STATUS_OK: "ok",
     STATUS_LUKS_UNDETERMINED: "warn",
     STATUS_DEVICE_UNDETERMINED: "warn",
+    STATUS_LVM_UNDETERMINED: "warn",
+    STATUS_LVM_PV_LUKS_UNDETERMINED: "warn",
 }
 
 
@@ -45,6 +54,7 @@ def _print_text(report, style) -> None:
             rows.append(("LUKS passthrough", bool_badge(style, report.luks_allows_discards)))
         if report.is_lvm or report.is_lvm is None:
             rows.append(("LVM passthrough", bool_badge(style, report.lvm_issue_discards)))
+            rows.append(("LVM PV LUKS passthrough", bool_badge(style, report.lvm_pv_luks_ok)))
         rows.append(("Mount 'discard' option", bool_badge(style, report.mount_has_discard)))
         rows.append(("fstrim.timer enabled", bool_badge(style, report.fstrim_timer_enabled)))
         print()

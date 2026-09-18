@@ -2,7 +2,7 @@
 
 [![English](https://img.shields.io/badge/English-555555?style=flat)](README.md) [![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=flat)](README.zh-CN.md)
 
-只读检查 Linux 挂载点的 SSD TRIM/discard 配置，将设备能力、LUKS 设置、LVM 配置以及挂载选项和定时任务汇总到一份报告中，指出首先发现的阻塞项或无法判断的环节。
+只读检查 Linux 挂载点的 SSD TRIM/discard 配置，将设备能力、LUKS 设置、LVM 配置以及挂载选项和定时任务汇总到一份报告中，指出首先发现的阻塞项或无法判断的环节。同时覆盖常见的"整盘加密 + LVM 叠加在上层"拓扑（Ubuntu/Debian 安装程序的"使用带加密的 LVM"选项）：逻辑卷本身从不是 LUKS 设备，因此本工具会单独检查所属卷组的底层物理卷是否为 LUKS 加密，以及是否允许 discard 透传。
 
 ![trim-doctor 输出示例](docs/images/example-output.png)
 
@@ -10,7 +10,7 @@
 
 ## 环境与安装
 
-需要 Linux、Python 3.9+，以及 util-linux 提供的 `lsblk`、`findmnt`。加密卷和 LVM 环境还需要 `cryptsetup`、`lvs`（lvm2）；周期 TRIM 检查使用 `systemctl`。无 Python 运行时依赖。
+需要 Linux、Python 3.9+，以及 util-linux 提供的 `lsblk`、`findmnt`。加密卷和 LVM 环境还需要 `cryptsetup`、`lvs`/`pvs`（lvm2）；周期 TRIM 检查使用 `systemctl`。无 Python 运行时依赖。
 
 ```bash
 git clone https://github.com/zhuhroscar-tech/trim-doctor.git

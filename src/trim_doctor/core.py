@@ -53,6 +53,8 @@ STATUS_NEITHER_DISCARD_NOR_TIMER = "no_discard_mount_option_and_no_fstrim_timer"
 STATUS_LUKS_UNDETERMINED = "luks_status_could_not_be_determined"
 STATUS_DEVICE_UNDETERMINED = "device_discard_support_could_not_be_determined"
 STATUS_LVM_UNDETERMINED = "lvm_status_could_not_be_determined"
+STATUS_LVM_PV_LUKS_BLOCKS = "lvm_physical_volume_luks_blocks_discard"
+STATUS_LVM_PV_LUKS_UNDETERMINED = "lvm_physical_volume_luks_status_could_not_be_determined"
 
 STATUS_EXPLANATIONS = {
     STATUS_OK: (
@@ -115,6 +117,26 @@ STATUS_EXPLANATIONS = {
         "root/elevated privileges and this process isn't running as root. "
         "Re-run with sudo to get a real answer instead of an assumed "
         "not-LVM or pass on this layer."
+    ),
+    STATUS_LVM_PV_LUKS_BLOCKS: (
+        "This mount's LVM volume group is backed by a LUKS-encrypted "
+        "physical volume (the common Ubuntu/Debian 'whole-disk encryption "
+        "with LVM on top' layout) that does not have discard passthrough "
+        "enabled. Without `allow-discards` (LUKS2 persistent flag) or "
+        "`discard` in /etc/crypttab for that physical volume, TRIM "
+        "requests never reach the underlying device at all, even though "
+        "the logical volume itself is not directly a LUKS mapping and "
+        "would otherwise look unencrypted to a check that only inspects "
+        "the mounted device name."
+    ),
+    STATUS_LVM_PV_LUKS_UNDETERMINED: (
+        "This mount's LVM volume group's underlying physical volume(s) "
+        "may be LUKS-encrypted, but whether discard passthrough is "
+        "enabled there could not be determined -- `pvs`, `lvs`, or "
+        "`cryptsetup luksDump`/`status` failed, most likely because this "
+        "check requires root/CAP_SYS_ADMIN and this process isn't running "
+        "as root. Re-run with sudo to get a real answer instead of an "
+        "assumed pass on this layer."
     ),
 }
 
@@ -255,6 +277,90 @@ def is_lvm_device(device: str, runner=run_capture) -> Optional[bool]:
     return device.strip() in out
 
 
+def get_lvm_vg_name(device: str, runner=run_capture) -> Optional[str]:
+    """Return the volume-group name that owns this LV device, or None if
+    it could not be determined (permission denied, or the LV genuinely
+    isn't listed)."""
+    out, err, rc = runner(["lvs", "--noheadings", "-o", "lv_path,vg_name"])
+    if _is_permission_denied(err, rc):
+        return None
+    target = device.strip()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == target:
+            return parts[1]
+    return None
+
+
+def get_vg_pv_devices(vg_name: str, runner=run_capture) -> Optional[list]:
+    """Return the list of physical-volume device paths backing a volume
+    group, or None if the check itself could not be performed (e.g. `pvs`
+    requires elevated privileges in some locked-down environments and
+    fails with a permission error rather than a real answer). An empty
+    list (as opposed to None) means `pvs` ran successfully but reported
+    no PVs for this VG, which should not happen for a real VG but is
+    treated as "nothing to check" rather than "undetermined"."""
+    out, err, rc = runner(["pvs", "--noheadings", "-o", "pv_name,vg_name"])
+    if _is_permission_denied(err, rc):
+        return None
+    devices = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == vg_name:
+            devices.append(parts[0])
+    return devices
+
+
+def lvm_pv_luks_discard_status(
+    device: str, runner=run_capture
+) -> Optional[bool]:
+    """Check whether any physical volume backing this LV's volume group
+    is itself a LUKS container that blocks discard passthrough.
+
+    This covers the common "whole-disk encryption with LVM on top"
+    topology (Ubuntu/Debian installer's "Use LVM with encryption"
+    option, and the Arch Wiki's documented full-disk-encryption-plus-LVM
+    layout): the physical/PV layer is LUKS-encrypted, then LVM's VG/LV
+    sit inside that single decrypted container. The findmnt SOURCE for
+    a mount in this topology resolves to the LV (e.g. /dev/vg0/root),
+    which is never itself LUKS -- `cryptsetup status` on an LV correctly
+    reports "not active" -- so a plain is_luks_device(lv) check always
+    returns False here and the whole LUKS layer goes unchecked, letting
+    a real 'PV has no allow-discards, TRIM silently dropped' condition
+    be reported as a healthy chain.
+
+    Returns True if no PV is LUKS (nothing to block), or every LUKS PV
+    allows discards. Returns False if at least one LUKS PV does not
+    allow discards (blocks the whole chain regardless of any other PV).
+    Returns None if this could not be determined for at least one
+    relevant PV (VG lookup failed, PV lookup failed, or a PV's own LUKS/
+    discard-flag check failed for a privilege reason) and no PV was
+    confirmed to actively block discard -- undetermined must not be
+    collapsed into a false 'healthy' answer."""
+    vg_name = get_lvm_vg_name(device, runner=runner)
+    if vg_name is None:
+        return None
+    pv_devices = get_vg_pv_devices(vg_name, runner=runner)
+    if pv_devices is None:
+        return None
+    if not pv_devices:
+        return True
+    saw_undetermined = False
+    for pv in pv_devices:
+        pv_is_luks = is_luks_device(pv, runner=runner)
+        if pv_is_luks is None:
+            saw_undetermined = True
+            continue
+        if not pv_is_luks:
+            continue
+        pv_ok = luks_allows_discards(pv, runner=runner)
+        if pv_ok is False:
+            return False
+        if pv_ok is None:
+            saw_undetermined = True
+    return None if saw_undetermined else True
+
+
 def lvm_issue_discards_enabled(runner=run_capture) -> Optional[bool]:
     """Return whether /etc/lvm/lvm.conf enables issue_discards, or None
     if the file could not be read (e.g. permission denied) -- distinct
@@ -294,6 +400,7 @@ class TrimChainReport:
     luks_allows_discards: Optional[bool] = None
     is_lvm: Optional[bool] = False
     lvm_issue_discards: Optional[bool] = None
+    lvm_pv_luks_ok: Optional[bool] = None
     mount_has_discard: Optional[bool] = None
     fstrim_timer_enabled: Optional[bool] = None
 
@@ -308,6 +415,7 @@ class TrimChainReport:
             "luks_allows_discards": self.luks_allows_discards,
             "is_lvm": self.is_lvm,
             "lvm_issue_discards": self.lvm_issue_discards,
+            "lvm_pv_luks_ok": self.lvm_pv_luks_ok,
             "mount_has_discard": self.mount_has_discard,
             "fstrim_timer_enabled": self.fstrim_timer_enabled,
         }
@@ -323,10 +431,16 @@ def diagnose(
     lvm_ok: Optional[bool],
     mount_discard: Optional[bool],
     timer_enabled: Optional[bool],
+    lvm_pv_luks_ok: Optional[bool] = None,
 ) -> TrimChainReport:
     """Walk the chain and return the first blocking layer, in physical
-    order (device, then LUKS, then LVM, then mount/timer) since a lower
-    layer blocking makes everything above it moot."""
+    order (device, then LUKS, then LVM's own issue_discards setting,
+    then LVM's underlying physical-volume LUKS layer -- the whole-disk-
+    encryption-with-LVM-on-top topology -- then mount/timer) since a
+    lower layer blocking makes everything above it moot.
+
+    `lvm_pv_luks_ok` is only meaningful when `is_lvm` is true; pass None
+    when the mount isn't LVM-backed at all (its default)."""
     if device_ok is False:
         status = STATUS_DEVICE_UNSUPPORTED
     elif device_ok is None:
@@ -343,6 +457,10 @@ def diagnose(
         status = STATUS_LVM_BLOCKS
     elif is_lvm and lvm_ok is None:
         status = STATUS_LVM_UNDETERMINED
+    elif is_lvm and lvm_pv_luks_ok is False:
+        status = STATUS_LVM_PV_LUKS_BLOCKS
+    elif is_lvm and lvm_pv_luks_ok is None:
+        status = STATUS_LVM_PV_LUKS_UNDETERMINED
     elif not mount_discard and not timer_enabled:
         status = STATUS_NEITHER_DISCARD_NOR_TIMER
     else:
@@ -358,6 +476,7 @@ def diagnose(
         luks_allows_discards=luks_ok,
         is_lvm=is_lvm,
         lvm_issue_discards=lvm_ok,
+        lvm_pv_luks_ok=lvm_pv_luks_ok,
         mount_has_discard=mount_discard,
         fstrim_timer_enabled=timer_enabled,
     )
@@ -371,6 +490,11 @@ def diagnose_mountpoint(mountpoint: str, runner=run, capture_runner=run_capture)
 
     is_lvm = is_lvm_device(device, runner=capture_runner) if device else False
     lvm_ok = lvm_issue_discards_enabled(runner=capture_runner) if is_lvm else None
+    lvm_pv_luks_ok = (
+        lvm_pv_luks_discard_status(device, runner=capture_runner)
+        if (is_lvm and device)
+        else None
+    )
 
     device_ok = device_supports_discard(device, runner=runner) if device else None
     mount_discard = mount_has_discard_option(mountpoint, runner=runner)
@@ -386,4 +510,5 @@ def diagnose_mountpoint(mountpoint: str, runner=run, capture_runner=run_capture)
         lvm_ok=lvm_ok,
         mount_discard=mount_discard,
         timer_enabled=timer_enabled,
+        lvm_pv_luks_ok=lvm_pv_luks_ok,
     )

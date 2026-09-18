@@ -2,7 +2,7 @@
 
 [![English](https://img.shields.io/badge/English-555555?style=flat)](README.md) [![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=flat)](README.zh-CN.md)
 
-Read-only Linux diagnostics for a mount point's SSD TRIM/discard configuration. It brings device capabilities, LUKS settings, LVM configuration and mount/timer checks into one report, highlighting the first blocking or undetermined layer.
+Read-only Linux diagnostics for a mount point's SSD TRIM/discard configuration. It brings device capabilities, LUKS settings, LVM configuration and mount/timer checks into one report, highlighting the first blocking or undetermined layer. This also covers the common "whole-disk encryption with LVM on top" layout (Ubuntu/Debian installer's "Use LVM with encryption" option): a logical volume is never itself a LUKS device, so the tool separately checks whether the volume group's underlying physical volume is LUKS-encrypted and, if so, whether it allows discards.
 
 ![trim-doctor example output](docs/images/example-output.png)
 
@@ -10,7 +10,7 @@ Read-only Linux diagnostics for a mount point's SSD TRIM/discard configuration. 
 
 ## Requirements and installation
 
-Python 3.9+ on Linux, with `lsblk` and `findmnt` from util-linux. Encrypted/LVM setups also need `cryptsetup` and `lvs` (lvm2); the periodic-trim check uses `systemctl`. There are no Python runtime dependencies.
+Requires Linux and Python 3.9+, with `lsblk` and `findmnt` from util-linux. Encrypted/LVM setups also need `cryptsetup` and `lvs`/`pvs` (lvm2); the periodic-trim check uses `systemctl`. There are no Python runtime dependencies.
 
 ```bash
 git clone https://github.com/zhuhroscar-tech/trim-doctor.git
