@@ -188,8 +188,15 @@ _LSBLK_DISCARD_RE = re.compile(r"^(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s*$")
 
 def device_supports_discard(device: str, runner=run) -> Optional[bool]:
     """Parse `lsblk --discard` for a device/mapper name, returning True if
-    DISC-GRAN or DISC-MAX is nonzero, False if both are zero, None if the
-    device couldn't be found in the output."""
+    DISC-GRAN or DISC-MAX is nonzero, False if both are confirmed zero,
+    None if the device couldn't be found in the output OR if a matching
+    line was found but at least one of DISC-GRAN/DISC-MAX was unparseable
+    (locale/version quirk) and neither field confirmed nonzero support --
+    an unparseable value must never be silently coerced to zero via
+    `gran_val or 0`, since that collapses a genuinely undetermined layer
+    into a confident 'device does not support discard' false negative,
+    the same false-negative bug class already guarded against for LUKS/
+    LVM detection elsewhere in this module."""
     name = device.split("/")[-1]
     out = runner(["lsblk", "-no", "NAME,DISC-ALN,DISC-GRAN,DISC-MAX", "-r"])
     for line in out.splitlines():
@@ -202,7 +209,11 @@ def device_supports_discard(device: str, runner=run) -> Optional[bool]:
         disc_gran, disc_max = parts[2], parts[3]
         gran_val = _size_to_bytes(disc_gran)
         max_val = _size_to_bytes(disc_max)
-        return bool((gran_val or 0) > 0 or (max_val or 0) > 0)
+        if (gran_val or 0) > 0 or (max_val or 0) > 0:
+            return True
+        if gran_val is None or max_val is None:
+            return None
+        return False
     return None
 
 

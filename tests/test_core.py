@@ -618,3 +618,47 @@ def test_lvm_issue_discards_enabled_skips_comment_lines():
         return "devices {\n    # issue_discards = 0\n    issue_discards = 1\n}\n", "", 0
 
     assert lvm_issue_discards_enabled(runner=fake_runner) is True
+
+
+def test_device_supports_discard_unparseable_gran_and_max_is_undetermined():
+    # Regression: if BOTH DISC-GRAN and DISC-MAX are unparseable tokens
+    # (locale/version quirk -- see test_size_to_bytes_unparseable_value_
+    # returns_none above), the caller must get None (undetermined), not
+    # a confident False. The pre-fix code used `(gran_val or 0) > 0`,
+    # which silently coerces None -> 0, collapsing "we don't know" into
+    # "device does not support discard" -- the exact false-negative bug
+    # class this module already guards against for LUKS/LVM detection
+    # (is_luks_device, is_lvm_device both return None on undetermined
+    # rather than False). A tool that tells a user "TRIM is impossible
+    # here" when it actually couldn't parse the answer is worse than
+    # useless -- it's actively misleading.
+    sample = "nvme0n1 0 unparseable-token unparseable-token2\n"
+
+    def fake_runner(cmd, timeout=15):
+        return sample
+
+    assert device_supports_discard("/dev/nvme0n1", runner=fake_runner) is None
+
+
+def test_device_supports_discard_one_unparseable_one_confirmed_nonzero_is_true():
+    # If either field parses as confirmed nonzero, that's a real positive
+    # answer regardless of the other field being unparseable -- True must
+    # still win over "undetermined" when we already have a real answer.
+    sample = "nvme0n1 0 unparseable-token 2147450880\n"
+
+    def fake_runner(cmd, timeout=15):
+        return sample
+
+    assert device_supports_discard("/dev/nvme0n1", runner=fake_runner) is True
+
+
+def test_device_supports_discard_both_confirmed_zero_is_false():
+    # Sanity: the ordinary "genuinely doesn't support discard" case must
+    # still return a real False, not regress to None just because the
+    # undetermined branch now exists.
+    sample = "sdb 0 0 0\n"
+
+    def fake_runner(cmd, timeout=15):
+        return sample
+
+    assert device_supports_discard("/dev/sdb", runner=fake_runner) is False
