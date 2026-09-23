@@ -59,6 +59,27 @@ def test_device_supports_discard_false():
     assert device_supports_discard("/dev/sdb", runner=fake_runner) is False
 
 
+def test_device_supports_discard_parses_human_lsblk_units():
+    """Regression: util-linux lsblk may print DISC-GRAN/DISC-MAX as human
+    units like 4K/2G unless callers force bytes. Those values are confirmed
+    nonzero discard support, not an undetermined device layer."""
+    def fake_runner(cmd, timeout=15):
+        return "nvme0n1 0 4K 2G\nsda 0 0B 0B\n"
+
+    assert device_supports_discard("/dev/nvme0n1", runner=fake_runner) is True
+    assert device_supports_discard("/dev/sda", runner=fake_runner) is False
+
+
+def test_size_to_bytes_handles_lsblk_units():
+    assert _size_to_bytes("0") == 0
+    assert _size_to_bytes("0B") == 0
+    assert _size_to_bytes("512") == 512
+    assert _size_to_bytes("4K") == 4096
+    assert _size_to_bytes("1.5M") == 1572864
+    assert _size_to_bytes("2G") == 2147483648
+    assert _size_to_bytes("garbage") is None
+
+
 def test_device_supports_discard_none_when_not_found():
     def fake_runner(cmd, timeout=15):
         return LSBLK_DISCARD_SAMPLE

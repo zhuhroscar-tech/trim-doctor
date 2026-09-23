@@ -217,14 +217,27 @@ def device_supports_discard(device: str, runner=run) -> Optional[bool]:
     return None
 
 
+_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)([KMGTPE]?)(?:i?B?)?$", re.IGNORECASE)
+_SIZE_MULTIPLIERS = {
+    "": 1,
+    "K": 1024,
+    "M": 1024 ** 2,
+    "G": 1024 ** 3,
+    "T": 1024 ** 4,
+    "P": 1024 ** 5,
+    "E": 1024 ** 6,
+}
+
+
 def _size_to_bytes(value: str) -> Optional[int]:
     value = value.strip()
-    if not value or value == "0":
-        return 0
-    try:
-        return int(value)
-    except ValueError:
-        return None  # lsblk -r sometimes prints raw bytes; unparseable = unknown
+    if not value:
+        return None
+    match = _SIZE_RE.match(value)
+    if not match:
+        return None  # unparseable = unknown, never silently zero
+    number, unit = match.groups()
+    return int(float(number) * _SIZE_MULTIPLIERS[unit.upper()])
 
 
 def is_luks_device(device: str, runner=run_capture) -> Optional[bool]:
