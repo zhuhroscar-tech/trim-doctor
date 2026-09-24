@@ -46,4 +46,4 @@ python -m pytest -q
 python -m pip uninstall trim-doctor
 ```
 
-[发布文件](https://github.com/zhuhroscar-tech/trim-doctor/releases) · [MIT 许可证](LICENSE)
+[更新日志](CHANGELOG.md) · [发布文件](https://github.com/zhuhroscar-tech/trim-doctor/releases) · [MIT 许可证](LICENSE)
