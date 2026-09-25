@@ -40,6 +40,7 @@ def test_changelog_documents_current_release():
 
 def test_ci_keeps_tests_and_release_artifacts_covered():
     ci = _read(".github/workflows/ci.yml")
+    assert "tags: [\"v*\"]" in ci
     assert "python -m pytest" in ci
     assert "python -m build" in ci
     assert "zipapp" in ci
